@@ -199,16 +199,6 @@ void meet(Node *root, char *parent_friend_name, char *child_friend_info) {
             print_indirect_meet((char *)parent_friend_name, (char *)child_friend_info);
         }
 
-        // 父進程可以寫入管道，發送命令給子進程（可以根據需求進行修改）
-        write(pipe_parent_to_child[1], "Hello, child\n", 13);
-
-        // 從子進程讀取回應
-        ssize_t n = read(pipe_child_to_parent[1], buffer, sizeof(buffer) - 1);
-        if (n > 0) {
-            buffer[n] = '\0';
-            printf("Parent received: %s\n", buffer);
-        }
-
         // 關閉管道並等待子進程結束
         close(pipe_parent_to_child[1]);
         close(pipe_child_to_parent[0]);
