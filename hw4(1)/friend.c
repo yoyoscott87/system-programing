@@ -32,6 +32,8 @@ typedef struct Node {
     struct Node *first_child;
     struct Node *next_sibling;
     pid_t pid;
+    int pipe_parent_to_child[2];
+    int pipe_child_to_parent[2];
 } Node;
 typedef struct Queue{
 	Node *nodes[100];
@@ -275,72 +277,141 @@ void check(Node *root, const char *parent_friend_name) {
     // 打印節點和子樹的資訊
     print_tree(parent_node);
 }
+
+void terminate_subtree(Node *node) {
+    if (node == NULL) return;
+
+    // 關閉與當前節點子進程相關的所有管道
+    close(node->pipe_parent_to_child[0]);
+    close(node->pipe_parent_to_child[1]);
+    close(node->pipe_child_to_parent[0]);
+    close(node->pipe_child_to_parent[1]);
+
+    // 等待當前節點的子進程結束
+    if (node->pid > 0) {
+        waitpid(node->pid, NULL, WNOHANG); // 等待子進程結束，避免僵屍進程
+    }
+
+    // 遞迴終止子節點 (先序遍歷)
+    terminate_subtree(node->first_child);
+    terminate_subtree(node->next_sibling);
+}
+
+
+
+void graduate(Node *root, const char *friend_name) {
+    Node *target_node;
+
+    // 如果 friend_name 是 Not_Tako，直接指向根節點
+    if (strcmp(friend_name, "Not_Tako") == 0) {
+        target_node = root;
+    } else {
+        // 否則使用 find_node 查找目標節點
+        target_node = find_node(root, friend_name);
+        if (target_node == NULL) {
+            printf("Not_Tako has checked, he doesn't know %s\n", friend_name);
+            return;
+        }
+    }
+
+    // 執行 Check <friend_name> 顯示子樹資訊
+    check(root, friend_name);
+
+    // 終止子樹中所有節點
+    terminate_subtree(target_node);
+
+    // 如果是 Not_Tako，打印完成訊息並結束
+    if (strcmp(friend_name, "Not_Tako") == 0) {
+        printf("Congratulations! You've finished Not_Tako's annoying tasks!\n");
+        exit(0); // 結束程式
+    }
+}
+
 int main(int argc, char *argv[]) {
-    // Hi! Welcome to SP Homework 2, I hope you have fun
-    //pid_t process_pid = getpid(); // you might need this when using fork()
     if (argc != 2) {
         fprintf(stderr, "Usage: ./friend [friend_info]\n");
         return 0;
     }
-    setvbuf(stdout, NULL, _IONBF, 0); // prevent buffered I/O, equivalent to fflush() after each stdout, study this as you may need to do it for other friends against their parents
-    
-    // put argument one into friend_info
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     strncpy(friend_info, argv[1], MAX_FRIEND_INFO_LEN);
     Node *root_node = NULL;
-    if(strcmp(argv[1], root) == 0){
-        // is Not_Tako
-	root_node = create_node("Not_Tako",0);
-        strncpy(friend_name, friend_info,MAX_FRIEND_NAME_LEN);      // put name into friend_nae
-        friend_name[MAX_FRIEND_NAME_LEN - 1] = '\0';        // in case strcmp messes with you
-        read_fp = stdin;        // takes commands from stdin
-        friend_value = 100;     // Not_Tako adopting nodes will not mod their values
+
+    if (strcmp(argv[1], root) == 0) {
+        root_node = create_node("Not_Tako", 0);
+        strncpy(friend_name, friend_info, MAX_FRIEND_NAME_LEN);
+        friend_name[MAX_FRIEND_NAME_LEN - 1] = '\0';
+        read_fp = stdin;
+        friend_value = 100;
     }
-    else{
-    }
+
     char command[100];
     while (fgets(command, sizeof(command), read_fp)) {
-            command[strcspn(command, "\n")] = '\0'; // 去掉換行符號
+        command[strcspn(command, "\n")] = '\0';
 
-            if (strncmp(command, "Meet", 4) == 0) {
-                // 使用 strtok 分割字符串
-                char *token = strtok(command, " ");
-                token = strtok(NULL, " ");  // 取得 parent_friend_name
-                char parent_friend_name[MAX_FRIEND_NAME_LEN];
-                if (token != NULL) {
-                    strncpy(parent_friend_name, token, MAX_FRIEND_NAME_LEN - 1);
-                    parent_friend_name[MAX_FRIEND_NAME_LEN - 1] = '\0';
-                } else {
-                    fprintf(stderr, "Invalid Meet command format: %s\n", command);
-                    continue;
+        if (strncmp(command, "Meet", 4) == 0) {
+            char *token = strtok(command, " ");
+            token = strtok(NULL, " ");
+            char parent_friend_name[MAX_FRIEND_NAME_LEN];
+            if (token != NULL) {
+                strncpy(parent_friend_name, token, MAX_FRIEND_NAME_LEN - 1);
+                parent_friend_name[MAX_FRIEND_NAME_LEN - 1] = '\0';
+            } else {
+                fprintf(stderr, "Invalid Meet command format: %s\n", command);
+                continue;
+            }
+
+            token = strtok(NULL, " ");
+            char child_friend_info[MAX_FRIEND_INFO_LEN];
+            if (token != NULL) {
+                strncpy(child_friend_info, token, MAX_FRIEND_INFO_LEN - 1);
+                child_friend_info[MAX_FRIEND_INFO_LEN - 1] = '\0';
+            } else {
+                fprintf(stderr, "Invalid Meet command format: %s\n", command);
+                continue;
+            }
+
+            meet(root_node, parent_friend_name, child_friend_info);
+
+        } else if (strncmp(command, "Check", 5) == 0) {
+            char parent_friend_name[MAX_FRIEND_NAME_LEN];
+            if (sscanf(command, "Check %s", parent_friend_name) == 1) {
+                check(root_node, parent_friend_name);
+            } else {
+                fprintf(stderr, "Invalid Check command format: %s\n", command);
+            }
+
+        } else if (strncmp(command, "Graduate", 8) == 0) {
+            char friend_name[MAX_FRIEND_NAME_LEN];
+            if (sscanf(command, "Graduate %s", friend_name) == 1) {
+                Node *target_node;
+		
+		
+		if(strcmp(friend_name,"Not_Tako")==0){
+			target_node = root_node;
+		}else{
+			target_node = find_node(root_node,friend_name);
+			if(target_node ==NULL){
+				print_fail_check(friend_name);
+				continue;
+			}
+		
+		}
+
+
+                check(root_node, friend_name);
+                terminate_subtree(target_node);
+		if (strcmp(friend_name, "Not_Tako") == 0) {
+                    print_final_graduate();
+
+                    exit(0);
                 }
 
-                token = strtok(NULL, " ");  // 取得 child_friend_info
-                char child_friend_info[MAX_FRIEND_INFO_LEN];
-                if (token != NULL) {
-                    strncpy(child_friend_info, token, MAX_FRIEND_INFO_LEN - 1);
-                    child_friend_info[MAX_FRIEND_INFO_LEN - 1] = '\0';
-                } else {
-                    fprintf(stderr, "Invalid Meet command format: %s\n", command);
-                    continue;
-                }
-
-                //printf("Parsed parent_friend_name: %s, child_friend_info: %s\n", parent_friend_name, child_friend_info);
-                meet(root_node, parent_friend_name, child_friend_info);
-            }else if (strncmp(command, "Check", 5) == 0) {
- 		   // 使用 sscanf 解析 Check 指令
-    		char parent_friend_name[MAX_FRIEND_NAME_LEN];
-    		if (sscanf(command, "Check %s", parent_friend_name) == 1) {
-        		// 調用 check 函數
-        		check(root_node, parent_friend_name);
-    		} else {
-        		fprintf(stderr, "Invalid Check command format: %s\n", command);
-    			}
-		}	
-	}
-        
-        // 這裡可以加入其他指令的處理邏輯
-    if(is_Not_Tako()){
-        print_final_graduate();
+            } else {
+                fprintf(stderr, "Invalid Graduate command format: %s\n", command);
+            }
+        }
     }
+
     return 0;
 }
