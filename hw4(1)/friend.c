@@ -20,16 +20,18 @@ static char friend_info[MAX_FRIEND_INFO_LEN];   // current process info
 static char friend_name[MAX_FRIEND_NAME_LEN];   // current process name
 static int friend_value;    // current process value
 FILE* read_fp = NULL;
-
+void get_friend_name(const char *friend_info, char *friend_name);
+int get_friend_value(const char *friend_info);
 // Is Root of tree
 static inline bool is_Not_Tako() {
     return (strcmp(friend_name, root) == 0);
 }
 
 typedef struct Node {
-    char name[MAX_FRIEND_NAME_LEN];
+    char friend_info[MAX_FRIEND_INFO_LEN];
     struct Node *first_child;
     struct Node *next_sibling;
+    pid_t pid;
 } Node;
 typedef struct Queue{
 	Node *nodes[100];
@@ -87,25 +89,58 @@ void print_compare_leq(char *friend_name){
 void print_final_graduate(){
     fprintf(stdout, "Congratulations! You've finished Not_Tako's annoying tasks!\n");
 }
-Node* create_node(const char *name) {
+
+Node* create_node(const char *friend_name, int friend_value) {
     Node *new_node = (Node *)malloc(sizeof(Node));
-    strncpy(new_node->name, name, MAX_FRIEND_NAME_LEN - 1);
-    new_node->name[MAX_FRIEND_NAME_LEN - 1] = '\0';
+    if (strcmp(friend_name, "Not_Tako") == 0) {
+        // 如果是 Not_Tako，忽略 friend_value
+        snprintf(new_node->friend_info, MAX_FRIEND_INFO_LEN, "%s", friend_name);
+    } else {
+        // 其他節點包含 friend_name 和 friend_value
+        snprintf(new_node->friend_info, MAX_FRIEND_INFO_LEN, "%s_%02d", friend_name, friend_value);
+    }
+    new_node->pid = -1;
     new_node->first_child = NULL;
     new_node->next_sibling = NULL;
     return new_node;
+
 }
 
-Node* find_node(Node *root, const char *name) {
+Node* find_node(Node *root, const char *target_name) {
     if (root == NULL) return NULL;
-    if (strcmp(root->name, name) == 0) return root;
 
-    Node *child_result = find_node(root->first_child, name);
+    // 提取節點的 friend_name 部分
+    char current_name[MAX_FRIEND_NAME_LEN];
+    get_friend_name(root->friend_info, current_name);
+
+    // 僅根據 friend_name 進行匹配
+    if (strcmp(current_name, target_name) == 0) return root;
+
+    // 遞迴查找子節點
+    Node *child_result = find_node(root->first_child, target_name);
     if (child_result != NULL) return child_result;
 
-    return find_node(root->next_sibling, name);
+    // 遞迴查找兄弟節點
+    return find_node(root->next_sibling, target_name);
 }
 
+void get_friend_name(const char *friend_info, char *friend_name) {
+    char temp[MAX_FRIEND_INFO_LEN];
+    strncpy(temp, friend_info, MAX_FRIEND_INFO_LEN);
+    char *underscore_pos = strchr(temp, '_');
+    if (underscore_pos != NULL) {
+        *underscore_pos = '\0';
+        strncpy(friend_name, temp, MAX_FRIEND_NAME_LEN - 1);
+        friend_name[MAX_FRIEND_NAME_LEN - 1] = '\0';
+    }
+}
+int get_friend_value(const char *friend_info) {
+    char *underscore_pos = strchr(friend_info, '_');
+    if (underscore_pos != NULL) {
+        return atoi(underscore_pos + 1);
+    }
+    return -1;  // 如果格式不正確，返回 -1
+}
 void add_child(Node *parent, Node *child) {
     if (parent->first_child == NULL) {
         parent->first_child = child;
@@ -130,7 +165,7 @@ void print_tree(Node *node){
 		for(int i=0;i<level_size;i++){
 			Node *current = dequeue(&q);
 
-			printf("%s",current -> name);
+			printf("%s",current -> friend_info);
 			if(i<level_size -1){
 				printf(" ");
 			}
@@ -143,17 +178,22 @@ void print_tree(Node *node){
 		printf("\n");
 	}
 }
-
-void meet(Node *root, char *parent_friend_name, char *child_friend_info) {
-    Node *parent_node = find_node(root,parent_friend_name);
+void meet(Node *root, char *parent_friend_name, const char *child_friend_info) {
+    Node *parent_node = find_node(root, parent_friend_name);
     
-    if (parent_node == NULL) {
-        // 如果 parent_friend_name 不存在於樹中，顯示錯誤信息
-        print_fail_meet((char *)parent_friend_name, (char *)child_friend_info);
-        return;
+    if (strcmp(parent_friend_name, "Not_Tako") == 0) {
+        parent_node = root;
+    } else {
+        // 否則，尋找相應的父節點
+        parent_node = find_node(root, parent_friend_name);
+        if (parent_node == NULL) {
+            // 找不到父節點時顯示錯誤
+            char child_name[MAX_FRIEND_NAME_LEN];
+            get_friend_name(child_friend_info, child_name);
+            print_fail_meet(parent_friend_name, child_name);
+            return;
+        }
     }
-
-    Node *child_node = create_node(child_friend_info);
 
     int pipe_parent_to_child[2], pipe_child_to_parent[2];
     char buffer[1024];
@@ -165,14 +205,13 @@ void meet(Node *root, char *parent_friend_name, char *child_friend_info) {
 
     pid_t pid = fork();
     if (pid < 0) {
-        // 錯誤處
         ERR_EXIT("fork");
     } else if (pid == 0) {
         // 子進程代碼
         close(pipe_parent_to_child[1]); // 關閉父進程寫的端點
         close(pipe_child_to_parent[0]); // 關閉父進程讀的端點
 
-        // 重定向子進程的標準輸入和輸出到管道
+        // 重定向子進程的標準輸入和標準輸出到管道
         dup2(pipe_parent_to_child[0], STDIN_FILENO);
         dup2(pipe_child_to_parent[1], STDOUT_FILENO);
 
@@ -182,39 +221,60 @@ void meet(Node *root, char *parent_friend_name, char *child_friend_info) {
 
         // 執行新的程序
         execlp("./friend", "friend", child_friend_info, (char *)NULL);
-        ERR_EXIT("execlp"); // execlp 失敗時退出
+        ERR_EXIT("execlp");
     } else {
         // 父進程代碼
         close(pipe_parent_to_child[0]); // 關閉子進程讀的端點
         close(pipe_child_to_parent[1]); // 關閉子進程寫的端點
 
-	add_child(parent_node, child_node);
+        // 寫入訊息到子進程
+        write(pipe_parent_to_child[1], "Hello from parent\n", 18);
 
-        // 檢查 parent_friend_name 是否為 "Not_Tako"
-        if (strcmp(parent_friend_name, "Not_Tako") == 0) {
-            // 直接見面
-            print_direct_meet((char *)child_friend_info);
-        } else {
-            // 間接見面
-            print_indirect_meet((char *)parent_friend_name, (char *)child_friend_info);
+        // 讀取子進程的回應
+        ssize_t n = read(pipe_child_to_parent[0], buffer, sizeof(buffer) - 1);
+        if (n > 0) {
+            buffer[n] = '\0';
+            printf("Parent received: %s\n", buffer);
         }
 
         // 關閉管道並等待子進程結束
         close(pipe_parent_to_child[1]);
         close(pipe_child_to_parent[0]);
         waitpid(pid, NULL, 0);
+
+	char child_name[MAX_FRIEND_NAME_LEN];
+        int child_value = get_friend_value(child_friend_info);
+        get_friend_name(child_friend_info, child_name);
+        Node *child_node = create_node(child_name, child_value);
+        child_node->pid = pid;
+        add_child(parent_node, child_node);
+
+
+        if (strcmp(parent_friend_name, "Not_Tako") == 0) {
+            print_direct_meet(child_name);
+        } else {
+            print_indirect_meet(parent_friend_name, child_name);
+        }
     }
 }
-void check(Node *root,char *parent_friend_name){
-	Node *parent_node = find_node(root, parent_friend_name);
-	
-        if(parent_node == NULL){
-		print_fail_check(parent_friend_name);
-		return;
-	}
-	print_tree(parent_node);
-}
+void check(Node *root, const char *parent_friend_name) {
+    Node *parent_node;
 
+    // 如果查詢的是根節點 Not_Tako，直接使用 root
+    if (strcmp(parent_friend_name, "Not_Tako") == 0) {
+        parent_node = root;
+    } else {
+        // 否則使用 find_node 查找
+        parent_node = find_node(root, parent_friend_name);
+        if (parent_node == NULL) {
+            printf("Not_Tako has checked, he doesn't know %s\n", parent_friend_name);
+            return;
+        }
+    }
+
+    // 打印節點和子樹的資訊
+    print_tree(parent_node);
+}
 int main(int argc, char *argv[]) {
     // Hi! Welcome to SP Homework 2, I hope you have fun
     //pid_t process_pid = getpid(); // you might need this when using fork()
@@ -229,7 +289,7 @@ int main(int argc, char *argv[]) {
     Node *root_node = NULL;
     if(strcmp(argv[1], root) == 0){
         // is Not_Tako
-	root_node = create_node("Not_Tako");
+	root_node = create_node("Not_Tako",0);
         strncpy(friend_name, friend_info,MAX_FRIEND_NAME_LEN);      // put name into friend_nae
         friend_name[MAX_FRIEND_NAME_LEN - 1] = '\0';        // in case strcmp messes with you
         read_fp = stdin;        // takes commands from stdin
