@@ -68,7 +68,7 @@ void print_fail_meet(char *parent_friend_name, char *child_friend_name) {
     fprintf(stdout, "Not_Tako does not know %s to meet %s\n", parent_friend_name, child_friend_name);
 }
 
-void print_fail_check(char *parent_friend_name){
+void print_fail_check(const char *parent_friend_name){
     fprintf(stdout, "Not_Tako has checked, he doesn't know %s\n", parent_friend_name);
 }
 
@@ -95,17 +95,21 @@ void print_final_graduate(){
 Node* create_node(const char *friend_name, int friend_value) {
     Node *new_node = (Node *)malloc(sizeof(Node));
     if (strcmp(friend_name, "Not_Tako") == 0) {
-        // 如果是 Not_Tako，忽略 friend_value
         snprintf(new_node->friend_info, MAX_FRIEND_INFO_LEN, "%s", friend_name);
     } else {
-        // 其他節點包含 friend_name 和 friend_value
         snprintf(new_node->friend_info, MAX_FRIEND_INFO_LEN, "%s_%02d", friend_name, friend_value);
     }
     new_node->pid = -1;
     new_node->first_child = NULL;
     new_node->next_sibling = NULL;
-    return new_node;
 
+    // 初始化管道文件描述符
+    new_node->pipe_parent_to_child[0] = -1;
+    new_node->pipe_parent_to_child[1] = -1;
+    new_node->pipe_child_to_parent[0] = -1;
+    new_node->pipe_child_to_parent[1] = -1;
+
+    return new_node;
 }
 
 Node* find_node(Node *root, const char *target_name) {
@@ -154,32 +158,37 @@ void add_child(Node *parent, Node *child) {
         sibling->next_sibling = child;
     }
 }
+
 void print_tree(Node *node){
-	if(node ==NULL)return;
+    if (node == NULL) return;
 
-	Queue q;
-	init_queue(&q);
-	enqueue(&q, node);
-	
-	while(!is_empty(&q)){
-		int level_size = q.rear - q.front;
-		
-		for(int i=0;i<level_size;i++){
-			Node *current = dequeue(&q);
+    Queue q;
+    init_queue(&q);
+    enqueue(&q, node);
 
-			printf("%s",current -> friend_info);
-			if(i<level_size -1){
-				printf(" ");
-			}
-			Node *child = current -> first_child;
-			while(child != NULL){
-				enqueue(&q, child);
-				child = child->next_sibling;
-			}
-		}
-		printf("\n");
-	}
+    while (!is_empty(&q)) {
+        int level_size = q.rear - q.front;
+
+        for (int i = 0; i < level_size; i++) {
+            Node *current = dequeue(&q);
+
+            // 檢查是否為空指針，避免訪問已釋放記憶體
+            if (current == NULL) continue;
+
+            printf("%s", current->friend_info);
+            if (i < level_size - 1) {
+                printf(" ");
+            }
+            Node *child = current->first_child;
+            while (child != NULL) {
+                enqueue(&q, child);
+                child = child->next_sibling;
+            }
+        }
+        printf("\n");
+    }
 }
+
 void meet(Node *root, char *parent_friend_name, const char *child_friend_info) {
     Node *parent_node = find_node(root, parent_friend_name);
     
@@ -248,6 +257,11 @@ void meet(Node *root, char *parent_friend_name, const char *child_friend_info) {
         int child_value = get_friend_value(child_friend_info);
         get_friend_name(child_friend_info, child_name);
         Node *child_node = create_node(child_name, child_value);
+	if (child_node == NULL) {
+            fprintf(stderr, "Failed to create child node\n");
+            return; // 若無法建立子節點則直接返回
+        }
+        
         child_node->pid = pid;
         add_child(parent_node, child_node);
 
@@ -277,55 +291,104 @@ void check(Node *root, const char *parent_friend_name) {
     // 打印節點和子樹的資訊
     print_tree(parent_node);
 }
-
 void terminate_subtree(Node *node) {
     if (node == NULL) return;
 
-    // 關閉與當前節點子進程相關的所有管道
-    close(node->pipe_parent_to_child[0]);
-    close(node->pipe_parent_to_child[1]);
-    close(node->pipe_child_to_parent[0]);
-    close(node->pipe_child_to_parent[1]);
-
-    // 等待當前節點的子進程結束
-    if (node->pid > 0) {
-        waitpid(node->pid, NULL, WNOHANG); // 等待子進程結束，避免僵屍進程
+    // 先遞迴釋放子節點和兄弟節點
+    if (node->first_child != NULL) {
+        terminate_subtree(node->first_child);
+        node->first_child = NULL;  // 避免再次訪問已釋放的子節點
+    }
+    if (node->next_sibling != NULL) {
+        terminate_subtree(node->next_sibling);
+        node->next_sibling = NULL;  // 避免再次訪問已釋放的兄弟節點
     }
 
-    // 遞迴終止子節點 (先序遍歷)
-    terminate_subtree(node->first_child);
-    terminate_subtree(node->next_sibling);
+    // 關閉管道並清理節點的指標
+    if (node->pipe_parent_to_child[0] != -1) close(node->pipe_parent_to_child[0]);
+    if (node->pipe_parent_to_child[1] != -1) close(node->pipe_parent_to_child[1]);
+    if (node->pipe_child_to_parent[0] != -1) close(node->pipe_child_to_parent[0]);
+    if (node->pipe_child_to_parent[1] != -1) close(node->pipe_child_to_parent[1]);
+
+    // 等待子進程終止，避免僵屍進程
+    if (node->pid > 0) waitpid(node->pid, NULL, WNOHANG);
+
+    // 釋放該節點並將指標設為 NULL
+    free(node);
 }
 
+Node* find_parent(Node* root, Node* target_node) {
+    if (root == NULL || target_node == NULL) return NULL;
 
+    Node* child = root->first_child;
+    while (child != NULL) {
+        if (child == target_node) {
+            return root;
+        }
+        Node* parent = find_parent(child, target_node);
+        if (parent != NULL) {
+            return parent;
+        }
+        child = child->next_sibling;
+    }
+    return NULL;
+}
 
-void graduate(Node *root, const char *friend_name) {
-    Node *target_node;
+void remove_node_from_parent(Node* parent, Node* target_node) {
+    if (parent == NULL || target_node == NULL) return;
 
-    // 如果 friend_name 是 Not_Tako，直接指向根節點
+    // If the first child is the target node
+    if (parent->first_child == target_node) {
+        parent->first_child = target_node->next_sibling;
+        target_node->next_sibling = NULL;  // 清空指標以避免後續操作
+        return;
+    }
+
+    // Traverse the sibling list to find and remove the target node
+    Node* prev = parent->first_child;
+    while (prev != NULL && prev->next_sibling != NULL) {
+        if (prev->next_sibling == target_node) {
+            prev->next_sibling = target_node->next_sibling;
+            target_node->next_sibling = NULL;  // 清空指標以避免後續操作
+            return;
+        }
+        prev = prev->next_sibling;
+    }
+}
+
+void graduate(Node* root, const char* friend_name) {
+    Node* target_node;
+
     if (strcmp(friend_name, "Not_Tako") == 0) {
         target_node = root;
     } else {
-        // 否則使用 find_node 查找目標節點
         target_node = find_node(root, friend_name);
         if (target_node == NULL) {
-            printf("Not_Tako has checked, he doesn't know %s\n", friend_name);
+            print_fail_check(friend_name);
             return;
         }
     }
 
-    // 執行 Check <friend_name> 顯示子樹資訊
     check(root, friend_name);
 
-    // 終止子樹中所有節點
+    // 如果 friend_name 不是根，從父節點中移除它
+    if (strcmp(friend_name, "Not_Tako") != 0) {
+        Node* parent_node = find_parent(root, target_node);
+        if (parent_node != NULL) {
+            remove_node_from_parent(parent_node, target_node);
+        }
+    }
+
+    // 終止並釋放子樹
     terminate_subtree(target_node);
 
-    // 如果是 Not_Tako，打印完成訊息並結束
+    // 根節點的特殊處理
     if (strcmp(friend_name, "Not_Tako") == 0) {
-        printf("Congratulations! You've finished Not_Tako's annoying tasks!\n");
-        exit(0); // 結束程式
+        print_final_graduate();
+        exit(0);
     }
 }
+
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -382,36 +445,20 @@ int main(int argc, char *argv[]) {
             }
 
         } else if (strncmp(command, "Graduate", 8) == 0) {
-            char friend_name[MAX_FRIEND_NAME_LEN];
-            if (sscanf(command, "Graduate %s", friend_name) == 1) {
-                Node *target_node;
-		
-		
-		if(strcmp(friend_name,"Not_Tako")==0){
-			target_node = root_node;
-		}else{
-			target_node = find_node(root_node,friend_name);
-			if(target_node ==NULL){
-				print_fail_check(friend_name);
-				continue;
-			}
-		
-		}
+		char friend_name[MAX_FRIEND_NAME_LEN];
+    		if (sscanf(command, "Graduate %s", friend_name) == 1) {
+        		graduate(root_node, friend_name);  // 直接使用 graduate 函式進行操作
+    		} else {
+        		fprintf(stderr, "Invalid Graduate command format: %s\n", command);
+    		} 
+	}
+    }
 
-
-                check(root_node, friend_name);
-                terminate_subtree(target_node);
-		if (strcmp(friend_name, "Not_Tako") == 0) {
-                    print_final_graduate();
-
-                    exit(0);
-                }
-
-            } else {
-                fprintf(stderr, "Invalid Graduate command format: %s\n", command);
-            }
-        }
+    // 在程式結束時釋放整個樹結構
+    if (root_node != NULL) {
+        terminate_subtree(root_node);
     }
 
     return 0;
 }
+
